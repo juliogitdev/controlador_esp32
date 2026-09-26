@@ -1,0 +1,89 @@
+﻿<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Fontes independentes — simulador</title>
+<style>
+body{font:16px system-ui;max-width:1000px;margin:auto;padding:24px;background:#eef2f6;color:#172435}section{background:white;padding:20px;margin:16px 0;border-radius:10px}label{display:block;margin:10px 0}input,select,button{padding:8px;max-width:100%;box-sizing:border-box}button{cursor:pointer;margin:4px;background:#1749a3;color:white;border:0;border-radius:4px}button:disabled{opacity:.5;cursor:wait}pre{white-space:pre-wrap;overflow-wrap:anywhere;background:#f4f6f9;padding:12px}h1{font-size:1.8rem}.status{min-height:1.5em}.error{color:#9b2424}
+</style>
+</head>
+<body>
+<h1>Simulador de fontes independentes</h1>
+<p>Cada cartão representa uma fonte que publica diretamente no backend. O controlador do ar não participa desta página.</p>
+<section>
+<label>URL base do futuro backend <input id="url" type="url" placeholder="https://seu-backend.example"></label>
+<p>Sem backend, use “Prévia do evento”. O simulador não contém regras de climatização nem aciona o ar. Tokens ficam apenas na memória desta página.</p>
+<p>Parar uma fonte interrompe seus próximos envios; as outras continuam. O backend deve expirar leituras antigas e tratar indisponibilidade por fonte.</p>
+</section>
+<div id="sources"></div>
+<script src="core.js"></script>
+<script>
+const {SimulatedSource, eventFor, publish} = SensorSimulation;
+const defaults = [
+  ['presence','Presença','true'], ['temperature','Temperatura (°C)','30'],
+  ['humidity','Umidade (%)','25'], ['voltage','Tensão (V)','220']
+];
+const jobs = [];
+function field(parent, labelText, value, type = 'text') {
+  const label = document.createElement('label'); label.textContent = labelText + ' ';
+  const input = document.createElement('input'); input.type = type; input.value = value;
+  if (type === 'password') input.autocomplete = 'off';
+  label.append(input); parent.append(label); return input;
+}
+for (const [kind, title, initial] of defaults) {
+  const card = document.createElement('section');
+  const heading = document.createElement('h2'); heading.textContent = title; card.append(heading);
+  const id = field(card, 'ID desta fonte', 'sim-' + kind + '-01');
+  const subject = field(card, 'ID da sala (associação no backend)', 'sala-01');
+  const token = field(card, 'Token desta fonte', '', 'password');
+  const input = field(card, 'Valor (presença: true/false; demais: número)', initial);
+  const unavailable = field(card, 'Simular indisponibilidade', '', 'checkbox');
+  const status = document.createElement('p'); status.className = 'status'; status.setAttribute('role','status');
+  const preview = document.createElement('pre');
+  const job = {running:false, busy:false, timer:null}; jobs.push(job);
+  function build() {
+    let value = null;
+    if (!unavailable.checked) {
+      try { value = JSON.parse(input.value); } catch { throw new Error('Informe um valor JSON válido.'); }
+    }
+    const source = new SimulatedSource(id.value.trim(), kind, value);
+    source.available = !unavailable.checked;
+    return eventFor(source, subject.value.trim(), crypto.randomUUID());
+  }
+  function show(text, error = false) { status.textContent = text; status.className = error ? 'status error' : 'status'; }
+  const inspect = document.createElement('button'); inspect.textContent = 'Prévia do evento';
+  inspect.onclick = () => {
+    try { preview.textContent = JSON.stringify(build(), null, 2); show('Prévia local. Nenhum dado foi enviado.'); }
+    catch (error) { show(error.message, true); }
+  };
+  const once = document.createElement('button'); once.textContent = 'Enviar uma vez';
+  const start = document.createElement('button'); start.textContent = 'Enviar a cada 10 s';
+  const stop = document.createElement('button'); stop.textContent = 'Parar esta fonte';
+  async function send() {
+    if (job.busy) return;
+    job.busy = true; once.disabled = true; start.disabled = true;
+    try {
+      const event = build(); preview.textContent = JSON.stringify(event, null, 2);
+      await publish(document.getElementById('url').value.trim(), token.value, event);
+      show('Backend confirmou o evento desta fonte.');
+    } catch (error) { show('Falha nesta fonte: ' + error.message, true); }
+    finally { job.busy = false; once.disabled = false; start.disabled = job.running; }
+  }
+  async function tick() {
+    if (!job.running) return;
+    await send();
+    if (job.running) job.timer = setTimeout(tick, 10000);
+  }
+  once.onclick = send;
+  start.onclick = () => { if (!job.running) { job.running = true; tick(); } };
+  stop.onclick = () => {
+    job.running = false; clearTimeout(job.timer); start.disabled = job.busy;
+    show('Próximos envios suspensos. Um envio já em andamento ainda pode concluir; a última leitura deverá expirar no backend.');
+  };
+  card.append(inspect, once, start, stop, status, preview);
+  document.getElementById('sources').append(card);
+}
+window.addEventListener('beforeunload', () => { for (const job of jobs) { job.running = false; clearTimeout(job.timer); } });
+</script>
+</body>
+</html>

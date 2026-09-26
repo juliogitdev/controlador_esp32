@@ -1,0 +1,247 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Configuração do dispositivo</title>
+  <style>
+    body { font-family: sans-serif; max-width: 960px; margin: auto; padding: 20px; background: #f0f2f5; color: #222; }
+    .card { background: white; padding: 16px; border-radius: 8px; margin-bottom: 12px; box-shadow: 0 2px 4px #0002; }
+    .header, .actions { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+    .header { justify-content: space-between; }
+    button { padding: 10px 16px; border: none; border-radius: 4px; cursor: pointer; font-weight: bold; background: #0069d9; color: white; }
+    button:disabled { background: #777; cursor: not-allowed; }
+    input, select, textarea { padding: 10px; max-width: 100%; box-sizing: border-box; }
+    .on { background: #218838; } .off { background: #c82333; }
+    #message { min-height: 1.5em; } .error { color: #a31515; }
+    label { display: block; margin: 10px 0; } textarea { width: 100%; } table { width: 100%; text-align: left; } td, th { padding: 6px; }
+  </style>
+</head>
+<body>
+  <h1>Configuração do dispositivo</h1>
+  <p>Este ESP32 é apenas o controlador do ar. Ele recebe comandos do backend sem consultar sensores, presença ou horários.</p>
+  <div class="card">
+    <p id="deviceStatus">Carregando dispositivo…</p>
+    <label>Chave de configuração local <input id="setupKey" type="password" autocomplete="off" placeholder="Exibida no monitor serial"></label>
+    <small>A chave autoriza a configuração e os testes IR locais.</small>
+  </div>
+  <form id="backendForm" class="card">
+    <h2>Conexão com o backend</h2>
+    <label>URL base HTTPS <input id="backendUrl" type="url" placeholder="https://seu-servico.onrender.com"></label>
+    <label>Token do dispositivo <input id="backendToken" type="password" autocomplete="off" placeholder="Vazio mantém o token salvo"></label>
+    <label>Certificado raiz de confiança (PEM)
+      <textarea id="backendCa" rows="4" placeholder="Cole o certificado raiz do servidor. Vazio mantém o salvo."></textarea>
+    </label>
+    <label>Intervalo de comunicação (segundos) <input id="interval" type="number" min="2" max="60" value="5" required></label>
+    <button type="submit">Salvar conexão</button>
+    <p id="credentialsStatus"></p>
+    <small>Sem backend ainda? Deixe a URL vazia e use os testes IR abaixo. O simulador de sensores é uma página separada no computador.</small>
+  </form>
+  <h2>Teste local de IR</h2>
+  <label>Portadora para novas capturas (kHz) <input id="carrier" type="number" min="20" max="60" value="38"></label>
+  <small>38 kHz é o padrão. A frequência não é medida automaticamente; altere somente se conhecer a portadora do controle e a compatibilidade do receptor.</small>
+  <p>Aprenda cada temperatura usando o controle original em modo refrigerar. Temperaturas sem sinal cadastrado não serão enviadas. O nome do perfil é apenas uma identificação do aparelho.</p>
+  <p id="localMode">Disponível enquanto nenhum backend estiver configurado.</p>
+  <form id="addForm" class="card">
+    <h2>Adicionar ambiente</h2>
+    <div class="actions"><input id="envName" aria-label="Nome do ambiente" placeholder="Ex.: Sala 01" maxlength="64" required>
+    <button type="submit">Cadastrar</button></div>
+  </form>
+  <p id="message" role="status" aria-live="polite"></p>
+  <p>O estado indica o último comando enviado; não confirma o estado real do aparelho.</p>
+  <div id="envList"></div>
+  <label>Nome de um estado personalizado <input id="customPreset" placeholder="Ex.: aquecer_22_ventilacao_auto" maxlength="48"></label>
+  <p>Use letras sem acentos, números e sublinhado. Cada nome representa o sinal completo emitido pelo controle original.</p>
+  <script>
+    let busy = false;
+    let armed = false;
+    let environments = [];
+    let lastCapture = '';
+    let cloudMode = false;
+    let configLoaded = false;
+    const selectedTemperatures = {};
+    const message = (text, error = false) => {
+      const el = document.getElementById('message');
+      el.textContent = text;
+      el.className = error ? 'error' : '';
+    };
+    async function api(path, payload) {
+      if (payload && path.endsWith('/capture')) {
+        const frequencyKhz = Number(document.getElementById('carrier').value);
+        if (!Number.isInteger(frequencyKhz) || frequencyKhz < 20 || frequencyKhz > 60) throw new Error('Portadora deve ser de 20 a 60 kHz.');
+        payload = {...payload, frequencyKhz};
+      }
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), 8000);
+      try {
+        const res = await fetch(path, { cache: 'no-store', signal: controller.signal,
+          ...(payload === undefined ? {} : { method: 'POST', headers: {'Content-Type': 'application/json', 'X-Setup-Key': document.getElementById('setupKey').value}, body: JSON.stringify(payload) }) });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || `Erro HTTP ${res.status}`);
+        return data;
+      } finally { clearTimeout(timer); }
+    }
+    function render() {
+      const list = document.getElementById('envList');
+      list.replaceChildren();
+      document.querySelector('#addForm button').disabled = busy || armed || cloudMode;
+      if (!environments.length) list.textContent = 'Cadastre um ambiente para aprender os comandos.';
+      for (const env of environments) {
+        const card = document.createElement('section');
+        card.className = 'card';
+        const heading = document.createElement('h3');
+        const states = {on: 'ligar', off: 'desligar', unknown: 'nenhum'};
+        heading.textContent = `${env.name} — Último comando: ${states[env.state] || 'desconhecido'}`;
+        if (env.lastPreset) heading.textContent += ` — Estado enviado: ${env.lastPreset}`;
+        card.append(heading);
+        const actions = document.createElement('div');
+        actions.className = 'actions';
+        for (const [button, label, style] of [['power_on', 'Ligar', 'on'], ['power_off', 'Desligar', 'off']]) {
+          const has = Array.isArray(env.buttons) && env.buttons.includes(button);
+          const send = document.createElement('button');
+          send.textContent = label;
+          send.className = style;
+          send.disabled = busy || armed || cloudMode || !has;
+          send.addEventListener('click', () => run(async () => {
+            const result = await api(`/api/environments/${encodeURIComponent(env.id)}/command`, {button});
+            message(result.persisted ? 'Comando enviado.' : 'Comando enviado, mas o histórico não foi salvo.', !result.persisted);
+          }));
+          const learn = document.createElement('button');
+          learn.textContent = `${has ? 'Regravar' : 'Aprender'} ${label}`;
+          learn.disabled = busy || armed || cloudMode;
+          learn.addEventListener('click', () => run(async () => {
+            await api(`/api/environments/${encodeURIComponent(env.id)}/capture`, {button, timeoutMs: 15000});
+            armed = true;
+            lastCapture = '';
+            message(`Captura iniciada: aponte o controle para o receptor e pressione ${label} em até 15 segundos.`);
+          }));
+          actions.append(send, learn);
+        }
+        card.append(actions);
+        const controls = document.createElement('div');
+        controls.className = 'actions';
+        const select = document.createElement('select');
+        select.setAttribute('aria-label', 'Temperatura desejada');
+        for (let t = 16; t <= 30; t++) {
+          const option = document.createElement('option');
+          option.value = String(t); option.textContent = `${t} C`; select.append(option);
+        }
+        select.value = String(selectedTemperatures[env.id] || 24);
+        select.disabled = busy || armed || cloudMode;
+        select.addEventListener('change', () => { selectedTemperatures[env.id] = Number(select.value); render(); });
+        const preset = `cool_${select.value}`;
+        const hasPreset = Array.isArray(env.buttons) && env.buttons.includes(preset);
+        const learnPreset = document.createElement('button');
+        learnPreset.textContent = `${hasPreset ? 'Regravar' : 'Aprender'} refrigerar ${select.value} C`;
+        learnPreset.disabled = busy || armed || cloudMode;
+        learnPreset.addEventListener('click', () => run(async () => {
+          await api(`/api/environments/${encodeURIComponent(env.id)}/capture`, {button: preset, timeoutMs: 15000});
+          armed = true; lastCapture = '';
+          message(`Captura pronta: envie pelo controle original o estado ligado, refrigerar, ${select.value} C. Ventilacao sera reproduzida como gravada.`);
+        }));
+        const sendPreset = document.createElement('button');
+        sendPreset.textContent = `Testar ${select.value} C`;
+        sendPreset.disabled = busy || armed || cloudMode || !hasPreset;
+        sendPreset.addEventListener('click', () => run(async () => {
+          const result = await api(`/api/environments/${encodeURIComponent(env.id)}/command`, {button: preset});
+          message(result.persisted ? 'Estado IR enviado.' : 'Enviado, mas falhou ao salvar o historico.', !result.persisted);
+        }));
+        controls.append(select, learnPreset, sendPreset);
+        card.append(controls);
+        const names = document.createElement('p');
+        names.textContent = `Estados aprendidos: ${(env.buttons || []).join(', ') || 'nenhum'}`;
+        card.append(names);
+        for (const [action, label] of [['capture', 'Aprender estado personalizado'], ['command', 'Enviar estado personalizado']]) {
+          const custom = document.createElement('button');
+          custom.textContent = label;
+          custom.disabled = busy || armed || cloudMode;
+          custom.addEventListener('click', () => run(async () => {
+            const button = document.getElementById('customPreset').value.trim();
+            if (!/^[A-Za-z0-9_]{1,48}$/.test(button)) throw new Error('Informe um nome válido para o estado personalizado.');
+            if (action === 'command' && !(env.buttons || []).includes(button)) throw new Error('Esse estado ainda não foi aprendido.');
+            const result = await api(`/api/environments/${encodeURIComponent(env.id)}/${action}`, {button, timeoutMs:15000});
+            if (action === 'capture') {
+              armed = true; lastCapture = '';
+              message('Captura pronta: envie o estado completo pelo controle original.');
+            } else message(result.persisted ? 'Estado IR enviado.' : 'Enviado, mas o histórico não foi salvo.', !result.persisted);
+          }));
+          card.append(custom);
+        }
+        list.append(card);
+      }
+    }
+    async function run(action) {
+      if (busy || armed) return;
+      busy = true;
+      render();
+      try {
+        await action();
+        environments = await api('/api/environments');
+      } catch (error) { message(error.message, true); }
+      finally { busy = false; render(); }
+    }
+    document.getElementById('addForm').addEventListener('submit', event => {
+      event.preventDefault();
+      run(async () => {
+        const input = document.getElementById('envName');
+        const name = input.value.trim();
+        if (!name || new TextEncoder().encode(name).length > 64) throw new Error('Use um nome de até 64 bytes (acentos ocupam mais de um byte).');
+        await api('/api/environments', {name});
+        input.value = '';
+        message('Ambiente cadastrado.');
+      });
+    });
+    function showDevice(device) {
+      cloudMode = !!device.configured;
+      document.getElementById('deviceStatus').textContent = `${device.deviceId} — Backend: ${device.backend.state}`;
+      document.getElementById('localMode').textContent = cloudMode ? 'Backend configurado: os comandos IR e ambientes são gerenciados pelo servidor.' : 'Sem backend: os testes locais de IR estão disponíveis.';
+      document.getElementById('credentialsStatus').textContent = `Token: ${device.tokenConfigured ? 'salvo' : 'não configurado'}. Certificado: ${device.caConfigured ? 'salvo' : 'não configurado'}.`;
+      if (!configLoaded) {
+        document.getElementById('backendUrl').value = device.url || '';
+        document.getElementById('interval').value = device.intervalMs / 1000;
+        configLoaded = true;
+      }
+    }
+    document.getElementById('backendForm').addEventListener('submit', event => {
+      event.preventDefault();
+      run(async () => {
+        await api('/api/device/config', {
+          url: document.getElementById('backendUrl').value.trim(),
+          token: document.getElementById('backendToken').value,
+          ca: document.getElementById('backendCa').value,
+          intervalMs: Number(document.getElementById('interval').value) * 1000,
+        });
+        document.getElementById('backendToken').value = '';
+        document.getElementById('backendCa').value = '';
+        showDevice(await api('/api/device'));
+        message('Configuração salva. Acompanhe o estado da conexão acima.');
+      });
+    });
+    async function refresh() {
+      if (!busy) {
+        try {
+          const device = await api('/api/device');
+          showDevice(device);
+          const capture = await api('/api/capture');
+          // A user action may have started while the GET requests were pending.
+          if (!busy) {
+            armed = capture.status === 'armed';
+            const key = JSON.stringify(capture);
+            if (key !== lastCapture) {
+              if (armed) message('Captura em andamento. Pressione o botão no controle remoto.');
+              else if (capture.status === 'captured') message(`Comando gravado: ${capture.samples} amostras.`);
+              else if (capture.status === 'timeout') message('Tempo esgotado. Tente capturar novamente.', true);
+              else if (capture.status === 'storage_error') message('Sinal recebido, mas não foi possível salvar.', true);
+              lastCapture = key;
+            }
+            const updated = await api('/api/environments');
+            if (!busy) { environments = updated; render(); }
+          }
+        } catch (error) { if (!busy) message(`Falha ao atualizar: ${error.message}`, true); }
+      }
+      setTimeout(refresh, 1500);
+    }
+    refresh();
+  </script>
+</body>
+</html>
