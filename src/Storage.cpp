@@ -157,6 +157,37 @@ bool Storage::getButton(const String& id, const String& preset, uint16_t* raw, u
     }
     return true;
 }
+bool Storage::deleteButton(const String& id, const String& preset) {
+    if (!exists(id) || !ClimateProtocol::validPreset(preset.c_str())) return false;
+    String path = signalPath(id, preset);
+    if (LittleFS.exists(path)) return LittleFS.remove(path);
+    DynamicJsonDocument doc(ENV_CAPACITY);
+    if (!readEnvironment(id, doc) || !doc["buttons"][preset]) return false;
+    doc["buttons"].as<JsonObject>().remove(preset);
+    if (doc["lastPreset"].as<String>() == preset) {
+        doc["lastCommand"] = "unknown";
+        doc["lastPreset"] = nullptr;
+        doc["temperature"] = nullptr;
+        doc["mode"] = nullptr;
+    }
+    return writeJson("/db/" + id + ".json", doc);
+}
+bool Storage::deleteEnvironment(const String& id) {
+    if (!exists(id)) return false;
+    String directory = "/db/" + id;
+    File root = LittleFS.open(directory);
+    if (root && root.isDirectory()) {
+        for (File file = root.openNextFile(); file; file = root.openNextFile()) {
+            if (file.isDirectory()) return false;
+            String path = file.name();
+            file.close();
+            if (!LittleFS.remove(path)) return false;
+        }
+        root.close();
+        if (!LittleFS.rmdir(directory)) return false;
+    }
+    return LittleFS.remove("/db/" + id + ".json");
+}
 bool Storage::recordTransmission(const String& id, const String& preset) {
     if (!ClimateProtocol::validPreset(preset.c_str())) return false;
     DynamicJsonDocument doc(ENV_CAPACITY);

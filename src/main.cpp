@@ -48,7 +48,8 @@ void executeCommand(JsonObjectConst command, JsonObject result) {
         } else result["error"] = error;
         return;
     }
-    if (type != "environment.create" && type != "ir.capture" && type != "ir.send" && type != "climate.set") { result["error"] = "unsupported_command"; return; }
+    if (type != "environment.create" && type != "environment.delete" && type != "ir.capture" &&
+        type != "ir.send" && type != "ir.delete" && type != "climate.set") { result["error"] = "unsupported_command"; return; }
     if (!storageReady) { result["error"] = "storage_unavailable"; return; }
     if (irService.isCapturing()) { result["error"] = "capture_busy"; return; }
     if (type == "environment.create") {
@@ -62,6 +63,12 @@ void executeCommand(JsonObjectConst command, JsonObject result) {
         return;
     }
     String env = command["envId"] | "";
+    if (type == "environment.delete") {
+        if (!Storage::deleteEnvironment(env)) { result["error"] = "environment_not_found_or_delete_failed"; return; }
+        result["status"] = "completed";
+        result["deleted"] = env;
+        return;
+    }
     String button = command["button"] | "";
     if (type == "climate.set") {
         if (command.containsKey("presetId")) {
@@ -90,6 +97,12 @@ void executeCommand(JsonObjectConst command, JsonObject result) {
     }
     if (!Storage::exists(env) || !ClimateProtocol::validPreset(button.c_str())) {
         result["error"] = "invalid_environment_or_button"; return;
+    }
+    if (type == "ir.delete") {
+        if (!Storage::deleteButton(env, button)) { result["error"] = "preset_not_found_or_delete_failed"; return; }
+        result["status"] = "completed";
+        result["deleted"] = button;
+        return;
     }
     if (type == "ir.capture") {
         if (command.containsKey("frequencyKhz") && (!command["frequencyKhz"].is<uint8_t>() || command["frequencyKhz"].as<uint8_t>() < 20 || command["frequencyKhz"].as<uint8_t>() > 60)) {

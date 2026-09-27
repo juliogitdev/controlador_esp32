@@ -14,6 +14,8 @@ public:
     static bool createEnvironment(const String& name, String* createdId = nullptr);
     static bool saveButton(const String& envId, const String& buttonName, uint16_t* rawData, uint16_t length, uint8_t frequencyKhz = 38);
     static bool getButton(const String& envId, const String& buttonName, uint16_t* outRaw, uint16_t& outLength, uint8_t& frequencyKhz);
+    static bool deleteButton(const String& envId, const String& buttonName);
+    static bool deleteEnvironment(const String& envId);
     static bool recordTransmission(const String& envId, const String& preset);
 };
 

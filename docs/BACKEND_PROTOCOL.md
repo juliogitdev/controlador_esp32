@@ -90,8 +90,10 @@ Estado inexistente/corrompido retorna `preset_not_learned_or_invalid`, sem trans
 | type | Campos adicionais |
 | --- | --- |
 | environment.create | name: 1–64 bytes UTF-8; ack retorna envId |
+| environment.delete | envId; remove o perfil e todos os estados IR salvos |
 | ir.capture | envId, button (nome do estado), timeoutMs opcional 1000–60000, frequencyKhz opcional inteiro 20–60 (padrão 38) |
 | ir.send | envId, button (nome do estado completo) |
+| ir.delete | envId, button; remove somente o estado IR informado |
 | climate.set | envId e presetId, ou atalho power/mode/temperature descrito acima |
 | device.configure | intervalMs opcional 2000–60000; não altera credenciais |
 
