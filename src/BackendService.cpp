@@ -28,7 +28,6 @@ void exchangeTask(void* parameter) {
             http.addHeader("Authorization", "Bearer " + job->token);
             job->code = http.POST(job->payload);
             int size = http.getSize();
-            // Contract requires bounded, non-chunked responses with Content-Length.
             if (job->code == 200 && size > 0 && size <= 2048) {
                 char buffer[2049];
                 auto* stream = http.getStreamPtr();
@@ -37,6 +36,12 @@ void exchangeTask(void* parameter) {
                 buffer[count] = 0;
                 if (count == static_cast<size_t>(size)) job->response = buffer;
                 else job->code = -2;
+            } else if (job->code == 200 && size == -1) {
+                // Reverse proxies such as Render/Cloudflare may use chunked transfer.
+                // HTTPClient decodes it; reject the body after reading if it exceeds our protocol bound.
+                String decoded = http.getString();
+                if (!decoded.isEmpty() && decoded.length() <= 2048) job->response = decoded;
+                else job->code = -3;
             } else if (job->code == 200) job->code = -3;
             http.end();
         }

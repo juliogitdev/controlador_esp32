@@ -33,7 +33,15 @@ export function RoomDetailsPage() {
   const loadCommands = async (id: string) => {
     try { setCommands(await api<Command[]>(`/api/admin/commands?deviceId=${encodeURIComponent(id)}`)); } catch { setCommands([]); }
   };
-  useEffect(() => { if (deviceId) void loadCommands(deviceId); }, [deviceId]);
+  useEffect(() => {
+    if (!deviceId) return;
+    void loadCommands(deviceId);
+    const timer = window.setInterval(() => {
+      void loadCommands(deviceId);
+      void reload();
+    }, 5000);
+    return () => window.clearInterval(timer);
+  }, [deviceId, reload]);
   const queueCommand = async (type: string, payload: Record<string, unknown>, success: string, expiresInSeconds = 300) => {
     if (!device) return;
     setSending(true); setActionState("");

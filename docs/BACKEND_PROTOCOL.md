@@ -12,7 +12,7 @@ Content-Type: application/json
 
 O ESP32 inicia a conexão HTTPS após sincronizar UTC por NTP. Configurar URL base, token e CA raiz PEM na página local usando X-Setup-Key. TLS é validado; não há setInsecure nem redirecionamentos. URL vazia desativa nuvem. Token/CA vazios no formulário mantêm os valores salvos. A interface local é HTTP e deve ser provisionada em rede confiável.
 
-O servidor deve validar token/deviceId e responder **HTTP 200, JSON UTF-8, Content-Length de 1 a 2048 bytes, sem chunked/compressão**. Não responder 204. Intervalo padrão 5 s, configurável de 2 a 60 s, somado à duração da troca. Falhas HTTP geram backoff até 60 s. Handshake tem timeout de 8 s; conexão/leitura 5 s. HTTP roda em tarefa separada; os efeitos em GPIO/arquivos são executados no loop principal.
+O servidor deve validar token/deviceId e responder **HTTP 200 com JSON UTF-8 de 1 a 2048 bytes**. Respostas com `Content-Length` e `Transfer-Encoding: chunked` são aceitas; não responder 204 nem comprimir o corpo. Intervalo padrão 5 s, configurável de 2 a 60 s, somado à duração da troca. Falhas HTTP geram backoff até 60 s. Handshake tem timeout de 8 s; conexão/leitura 5 s. HTTP roda em tarefa separada; os efeitos em GPIO/arquivos são executados no loop principal.
 
 ## Mensagem do atuador
 
